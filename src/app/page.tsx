@@ -1490,10 +1490,14 @@ export default function VSTAssistantApp() {
   const [crmPageFilter, setCrmPageFilter] = useState<string>("all");
   const [crmSearch, setCrmSearch] = useState<string>("");
 
+  const isScanningRef = useRef(false);
+
   const runScanner = async () => {
+    if (isScanningRef.current) return;
     try {
+      isScanningRef.current = true;
       setIsScanning(true);
-      const res = await fetch("/api/auto-scanner");
+      const res = await fetch("/api/auto-scanner", { cache: "no-store" });
       const data = await res.json();
       if (data.activities && Array.isArray(data.activities)) {
         setActivities(data.activities);
@@ -1515,16 +1519,15 @@ export default function VSTAssistantApp() {
     } catch (err) {
       console.error("Auto-scanner error:", err);
     } finally {
+      isScanningRef.current = false;
       setIsScanning(false);
     }
   };
 
-  // Background Auto-Scanner that scans and replies without needing Webhook / App Review
-  // Note: Relaxed to 3 minutes (180,000ms) to prevent exhausting Meta Graph API rate limit (Error #4).
-  // Users can also manually click "ស្កេន Comments ឥឡូវនេះ" whenever needed.
+  // Real-time Auto-Scanner every 5 seconds (5,000ms) to catch new comments immediately
   useEffect(() => {
     runScanner();
-    const interval = setInterval(runScanner, 180000);
+    const interval = setInterval(runScanner, 5000);
     return () => clearInterval(interval);
   }, []);
 

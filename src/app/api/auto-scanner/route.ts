@@ -246,8 +246,8 @@ export async function GET(req: NextRequest) {
                 keywordList.length === 0 ||
                 keywordList.some((kw) => messageText.toLowerCase().includes(kw));
 
-              // Reply if no reply yet, older than 2s, and matches trigger keywords
-              if (!hasPageReply && commentAgeSec > 2 && matchesKeywords) {
+              // Reply immediately if no reply yet and matches trigger keywords
+              if (!hasPageReply && matchesKeywords) {
                 const userTag = senderId
                   ? `@[${senderId}]`
                   : senderName && senderName !== "Customer" && senderName !== "អតិថិជន" && senderName !== "អតិថិជន Facebook"

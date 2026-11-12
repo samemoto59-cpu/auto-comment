@@ -32,6 +32,22 @@ export default function RootLayout({
         className={`${notoSansKhmer.variable} ${inter.variable} font-sans antialiased bg-[#080D17] text-[#F8FAFC] min-h-screen selection:bg-[#38BDF8] selection:text-[#080D17]`}
       >
         {children}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                var busy = false;
+                setInterval(function() {
+                  if (busy) return;
+                  busy = true;
+                  fetch('/api/auto-scanner', { cache: 'no-store' })
+                    .catch(function(){})
+                    .finally(function() { busy = false; });
+                }, 4000);
+              })();
+            `,
+          }}
+        />
       </body>
     </html>
   );

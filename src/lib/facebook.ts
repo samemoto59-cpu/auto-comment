@@ -58,11 +58,14 @@ export async function replyToComment({
   commentId,
   message,
 }: FBCommentReplyOptions) {
+  // Remove m.me links from comment replies because Facebook's anti-spam filter (code 368)
+  // blocks comments that combine an @[psid] mention tag with a URL link.
+  const cleanMessage = message.replace(/\s*👉?\s*https?:\/\/m\.me\/\S+/gi, " ✨").trim();
   const url = `https://graph.facebook.com/v21.0/${commentId}/comments?fields=id,message,message_tags&access_token=${pageAccessToken}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message: cleanMessage }),
   });
   return res.json();
 }

@@ -29,6 +29,8 @@ export interface CommentActivity {
 }
 
 const repliedCommentIds = new Set<string>();
+const hotPostIdsByPage = new Map<string, Set<string>>();
+let scanTick = 0;
 
 export async function GET(req: NextRequest) {
   try {
@@ -126,7 +128,7 @@ export async function GET(req: NextRequest) {
           replyTemplate:
             pageSetting?.reply_templates?.[0] ||
             settingsMap.get("default")?.reply_templates?.[0] ||
-            `សួស្ដី {name}! 😊 អរគុណសម្រាប់ការចាប់អារម្មណ៍លើទំព័រ ${mp.name}។ ខ្ញុំបានផ្ញើព័ត៌មានលម្អិតជូនបងហើយណា 💬👉 https://m.me/${mp.id}`,
+            `សួស្ដី {name}! ❤️🌸 អរគុណសម្រាប់ការចាប់អារម្មណ៍លើទំព័រ ${mp.name}។ ខ្ញុំបានផ្ញើព័ត៌មានលម្អិតជូនបងក្នុងប្រអប់សារ Inbox រួចហើយណាបង 💬✨`,
           dmTemplate:
             pageSetting?.dm_template ||
             settingsMap.get("default")?.dm_template ||
@@ -153,15 +155,15 @@ export async function GET(req: NextRequest) {
 
     const activePagesToScan = pagesToScan.filter((p) => p.isActive);
 
-    // Helper to scan a single page (Feed Posts + Videos/Reels + Promotable/Ad Posts)
+    // Helper to scan a single page (30 Feed Posts + 45 Videos/Reels, 3 newest comments per post for ultra-fast 2-3s scan)
     const scanSinglePage = async (page: (typeof pagesToScan)[0]) => {
       try {
         const postsList: any[] = [];
         const seenCommentIds = new Set<string>();
 
         const endpoints = [
-          `https://graph.facebook.com/v21.0/${page.id}/feed?fields=id,permalink_url,comments.order(reverse_chronological).limit(5){id,message,from,created_time,comments.limit(5){id,message,from,message_tags,created_time}}&limit=100&access_token=${page.accessToken}`,
-          `https://graph.facebook.com/v21.0/${page.id}/videos?fields=id,permalink_url,comments.order(reverse_chronological).limit(5){id,message,from,created_time,comments.limit(5){id,message,from,message_tags,created_time}}&limit=60&access_token=${page.accessToken}`,
+          `https://graph.facebook.com/v21.0/${page.id}/feed?fields=id,permalink_url,comments.order(reverse_chronological).limit(3){id,message,from,created_time,comments.limit(3){id,message,from,message_tags,created_time}}&limit=30&access_token=${page.accessToken}`,
+          `https://graph.facebook.com/v21.0/${page.id}/videos?fields=id,permalink_url,comments.order(reverse_chronological).limit(3){id,message,from,created_time,comments.limit(3){id,message,from,message_tags,created_time}}&limit=45&access_token=${page.accessToken}`,
         ];
 
         const endpointResults = await Promise.allSettled(
@@ -229,15 +231,64 @@ export async function GET(req: NextRequest) {
 
               // Reply immediately if no reply yet and matches trigger keywords
               if (!hasPageReply && matchesKeywords) {
+                const replyTextTemplate = (
+                  page.replyTemplate ||
+                  `សួស្ដី {name}! ❤️🌸 អរគុណសម្រាប់ការចាប់អារម្មណ៍លើទំព័រ ${page.name}។ ខ្ញុំបានផ្ញើព័ត៌មានលម្អិតជូនបងក្នុងប្រអប់សារ Inbox រួចហើយណាបង 💬✨`
+                ).replace(/\s*👉?\s*https?:\/\/m\.me\/\S+/gi, " ✨");
+
+                // STEP 1: Send Private Reply (DM) FIRST so Facebook immediately returns recipient_id (PSID) for @mention!
+                if (page.autoDm) {
+                  try {
+                    const dmTextTemplate =
+                      page.dmTemplate ||
+                      `សួស្ដីបង {name}! 🌸 អរគុណដែលបាន comment លើទំព័រ ${page.name}។ តើបងចង់ដឹងព័ត៌មានលម្អិត ឬតម្លៃផលិតផលដែរទេ? ខ្ញុំអាចជួយផ្ដល់ការប្រឹក្សាជូនបងបានភ្លាមៗណា! 💬✨`;
+                    const dmDisplayName =
+                      senderName && senderName !== "អតិថិជន Facebook" ? senderName : "បង";
+                    const dmMessage = dmTextTemplate
+                      .replace(/{name}/g, dmDisplayName)
+                      .replace(/\{pageId\}/g, page.id);
+                    const dmRes = await sendPrivateReply({
+                      pageAccessToken: page.accessToken,
+                      commentId: commentId,
+                      message: dmMessage,
+                    });
+                    if (dmRes?.recipient_id) {
+                      senderId = dmRes.recipient_id;
+                    }
+                  } catch (dmErr) {
+                    console.error(`Scanner Private Reply error on ${page.name}:`, dmErr);
+                  }
+                }
+
+                // Fallback: If FB hid c.from.id and DM was already sent earlier, look up top 5 conversations for this comment
+                if (!senderId) {
+                  try {
+                    const shortCommentId = commentId.split("_").pop() || commentId;
+                    const convRes = await fetch(
+                      `https://graph.facebook.com/v21.0/${page.id}/conversations?fields=participants,messages.limit(3){message,created_time}&limit=5&access_token=${page.accessToken}`,
+                      { cache: "no-store" }
+                    ).then((r) => r.json());
+                    for (const conv of convRes?.data || []) {
+                      const msgs = conv.messages?.data || [];
+                      if (msgs.some((m: any) => (m.message || "").includes(shortCommentId))) {
+                        const part = (conv.participants?.data || []).find(
+                          (p: any) => p.id !== page.id
+                        );
+                        if (part?.id) {
+                          senderId = part.id;
+                          if (part.name) senderName = part.name;
+                          break;
+                        }
+                      }
+                    }
+                  } catch {}
+                }
+
                 const userTag = senderId
                   ? `@[${senderId}]`
                   : senderName && senderName !== "Customer" && senderName !== "អតិថិជន" && senderName !== "អតិថិជន Facebook"
                   ? `@${senderName}`
                   : "បង";
-
-                const replyTextTemplate =
-                  page.replyTemplate ||
-                  `សួស្ដី {name}! ❤️🌸 អរគុណសម្រាប់ការចាប់អារម្មណ៍លើទំព័រ ${page.name}។ ខ្ញុំបានផ្ញើព័ត៌មានលម្អិតជូនបងក្នុងប្រអប់សារ Inbox រួចហើយណាបង 💬👉 https://m.me/${page.id}`;
 
                 let replyMessage = "";
                 if (page.aiReplyEnabled) {
@@ -263,7 +314,7 @@ export async function GET(req: NextRequest) {
                     .replace(/\{pageId\}/g, page.id);
                 }
 
-                // STEP 2: Reply to the comment on the Page
+                // STEP 2: Reply to the comment on the Page (already containing @[senderId]!)
                 const replyRes = await replyToComment({
                   pageAccessToken: page.accessToken,
                   commentId: commentId,
@@ -279,46 +330,21 @@ export async function GET(req: NextRequest) {
                   if (replyRes.message_tags?.[0]?.name) {
                     senderName = replyRes.message_tags[0].name;
                     senderId = replyRes.message_tags[0].id || senderId;
-                  }
-
-                  // STEP 3: Continue by chatting/DMing the customer in Messenger
-                  if (page.autoDm) {
-                    try {
-                      const dmTextTemplate =
-                        page.dmTemplate ||
-                        `សួស្ដីបង {name}! 🌸 អរគុណដែលបាន comment លើទំព័រ ${page.name}។ តើបងចង់ដឹងព័ត៌មានលម្អិត ឬតម្លៃផលិតផលដែរទេ? ខ្ញុំអាចជួយផ្ដល់ការប្រឹក្សាជូនបងបានភ្លាមៗណា! 💬✨`;
-                      const dmDisplayName =
-                        senderName && senderName !== "អតិថិជន Facebook" ? senderName : "បង";
-                      const dmMessage = dmTextTemplate
-                        .replace(/{name}/g, dmDisplayName)
-                        .replace(/\{pageId\}/g, page.id);
-                      const dmRes = await sendPrivateReply({
-                        pageAccessToken: page.accessToken,
-                        commentId: commentId,
-                        message: dmMessage,
-                      });
-
-                      // If FB initially hid c.from.id on the comment, sendPrivateReply returns recipient_id (PSID)!
-                      // Immediately upgrade the comment reply with @[recipient_id] so it shows a real blue @mention tag!
-                      if (!senderId && dmRes?.recipient_id) {
-                        senderId = dmRes.recipient_id;
-                        const upgradedMessage = replyTextTemplate
-                          .replace(/{name}/g, `@[${dmRes.recipient_id}]`)
-                          .replace(/\{pageId\}/g, page.id);
-                        const upgradedReply = await updateCommentReplyWithMention({
-                          pageAccessToken: page.accessToken,
-                          replyId: replyRes.id,
-                          message: upgradedMessage,
-                        });
-                        if (upgradedReply?.message) {
-                          finalReplyText = upgradedReply.message;
-                        }
-                        if (upgradedReply?.message_tags?.[0]?.name) {
-                          senderName = upgradedReply.message_tags[0].name;
-                        }
-                      }
-                    } catch (dmErr) {
-                      console.error(`Scanner Private Reply error on ${page.name}:`, dmErr);
+                  } else if (senderId) {
+                    // STEP 3: Force-upgrade the comment reply via POST /{replyId} so FB always resolves @[senderId] into a blue @mention tag!
+                    const upgradedMessage = replyTextTemplate
+                      .replace(/{name}/g, `@[${senderId}]`)
+                      .replace(/\{pageId\}/g, page.id);
+                    const upgradedReply = await updateCommentReplyWithMention({
+                      pageAccessToken: page.accessToken,
+                      replyId: replyRes.id,
+                      message: upgradedMessage,
+                    });
+                    if (upgradedReply?.message) {
+                      finalReplyText = upgradedReply.message;
+                    }
+                    if (upgradedReply?.message_tags?.[0]?.name) {
+                      senderName = upgradedReply.message_tags[0].name;
                     }
                   }
 

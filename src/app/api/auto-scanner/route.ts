@@ -160,8 +160,8 @@ export async function GET(req: NextRequest) {
         const seenCommentIds = new Set<string>();
 
         const endpoints = [
-          `https://graph.facebook.com/v21.0/${page.id}/feed?fields=id,permalink_url,comments.order(reverse_chronological).limit(30){id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=30&access_token=${page.accessToken}`,
-          `https://graph.facebook.com/v21.0/${page.id}/videos?fields=id,permalink_url,comments.order(reverse_chronological).limit(30){id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=30&access_token=${page.accessToken}`,
+          `https://graph.facebook.com/v21.0/${page.id}/feed?fields=id,permalink_url,comments.order(reverse_chronological).limit(5){id,message,from,created_time,comments.limit(5){id,message,from,message_tags,created_time}}&limit=100&access_token=${page.accessToken}`,
+          `https://graph.facebook.com/v21.0/${page.id}/videos?fields=id,permalink_url,comments.order(reverse_chronological).limit(5){id,message,from,created_time,comments.limit(5){id,message,from,message_tags,created_time}}&limit=60&access_token=${page.accessToken}`,
         ];
 
         const endpointResults = await Promise.allSettled(
@@ -214,25 +214,6 @@ export async function GET(req: NextRequest) {
               }
 
               const messageText = c.message || "(ស្ទីគ័រ / រូបភាព)";
-              const commentAgeSec = (Date.now() - new Date(c.created_time).getTime()) / 1000;
-
-              // Sync lead into Supabase customers (even if FB hid c.from.id, use a deterministic ID per page+name)
-              if (senderName && senderName !== "Customer" && senderName !== "អតិថិជន" && senderName !== "អតិថិជន Facebook") {
-                try {
-                  const effectiveFbUserId =
-                    senderId ||
-                    `fb_${page.id}_${senderName.trim().toLowerCase().replace(/\s+/g, "_")}`;
-                  await supabase.from("customers").upsert(
-                    {
-                      fb_user_id: effectiveFbUserId,
-                      name: senderName,
-                      source_page_id: page.id,
-                      last_activity_at: c.created_time || new Date().toISOString(),
-                    },
-                    { onConflict: "fb_user_id" }
-                  );
-                } catch {}
-              }
 
               let finalHasReplied = hasPageReply;
               let finalReplyText = pageReplyObj?.message || (repliedCommentIds.has(commentId) ? "បានឆ្លើយតបដោយ Bot" : undefined);

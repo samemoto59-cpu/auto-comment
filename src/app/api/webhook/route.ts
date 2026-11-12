@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { replyToComment, sendPrivateReply } from "@/lib/facebook";
+import {
+  replyToComment,
+  sendPrivateReply,
+  updateCommentReplyWithMention,
+} from "@/lib/facebook";
 import { supabase } from "@/lib/supabase";
 import { generateSmartCommentReply } from "@/lib/gemini";
 import { readFile } from "fs/promises";
@@ -66,10 +70,6 @@ async function getPageConfig(pageId: string): Promise<PageConfig> {
         masterActive = false;
       }
 
-      // Check Global Member Lock from vst_members_lock
-      const lockRow = rows.find((r) => r.id === "vst_members_lock");
-      const membersGlobalEnabled = lockRow ? lockRow.is_active !== false : true;
-
       const pageRow = rows.find((r) => r.id === pageId);
       if (pageRow) {
         isPageActive = pageRow.is_active !== false;
@@ -95,8 +95,8 @@ async function getPageConfig(pageId: string): Promise<PageConfig> {
                 if (matched) {
                   if (matched.accessToken) token = matched.accessToken;
                   if (matched.name) pageName = matched.name;
-                  if (!membersGlobalEnabled || m.botEnabled === false || m.status === "Disabled") {
-                    console.log(`[Webhook] Member ${m.name} bot is disabled by Admin (Global Lock: ${!membersGlobalEnabled}). Muting page ${pageId}`);
+                  if (m.botEnabled === false || m.status === "Disabled") {
+                    console.log(`[Webhook] Member ${m.name} bot is disabled by Admin. Muting page ${pageId}`);
                     isPageActive = false;
                   }
                   break;
@@ -338,12 +338,15 @@ export async function POST(req: NextRequest) {
                 });
                 console.log(`[Webhook] Reply sent for comment ${commentId} on ${pageConfig.pageName}:`, replyRes);
 
+                let resolvedSenderId = senderId || replyRes?.message_tags?.[0]?.id;
+                let resolvedSenderName = senderName || replyRes?.message_tags?.[0]?.name;
+
                 // B. Auto Private Reply (DM into Customer Messenger) using page-specific token
                 if (pageConfig.autoDm) {
                   try {
                     const displayName =
-                      senderName && senderName !== "Customer" && senderName !== "អតិថិជន" && senderName !== "អតិថិជន Facebook"
-                        ? senderName
+                      resolvedSenderName && resolvedSenderName !== "Customer" && resolvedSenderName !== "អតិថិជន" && resolvedSenderName !== "អតិថិជន Facebook"
+                        ? resolvedSenderName
                         : "បង";
                     const dmTextTemplate =
                       pageConfig.dmTemplate ||
@@ -356,6 +359,28 @@ export async function POST(req: NextRequest) {
                       message: dmMessage,
                     });
                     console.log(`[Webhook] Private Reply (DM) sent for comment ${commentId} on ${pageConfig.pageName}:`, dmRes);
+
+                    if (!resolvedSenderId && dmRes?.recipient_id && replyRes?.id) {
+                      resolvedSenderId = dmRes.recipient_id;
+                      const upgradedText = getCommentReply(
+                        pageId,
+                        pageConfig.pageName,
+                        resolvedSenderName,
+                        pageConfig.templates,
+                        dmRes.recipient_id
+                      );
+                      const upgradedReply = await updateCommentReplyWithMention({
+                        pageAccessToken: pageConfig.token,
+                        replyId: replyRes.id,
+                        message: upgradedText,
+                      });
+                      if (upgradedReply?.message) {
+                        commentText = upgradedReply.message;
+                      }
+                      if (upgradedReply?.message_tags?.[0]?.name) {
+                        resolvedSenderName = upgradedReply.message_tags[0].name;
+                      }
+                    }
                   } catch (dmErr) {
                     console.error(`[Webhook] Private Reply failed for comment ${commentId}:`, dmErr);
                   }
@@ -366,8 +391,8 @@ export async function POST(req: NextRequest) {
                   await supabase.from("comments").upsert({
                     id: commentId,
                     post_id: postId,
-                    fb_user_id: senderId || null,
-                    sender_name: senderName || "អតិថិជន Facebook",
+                    fb_user_id: resolvedSenderId || null,
+                    sender_name: resolvedSenderName || "អតិថិជន Facebook",
                     message: userComment,
                     reply_message: commentText,
                     created_time: new Date().toISOString(),

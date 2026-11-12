@@ -160,9 +160,8 @@ export async function GET(req: NextRequest) {
         const seenCommentIds = new Set<string>();
 
         const endpoints = [
-          `https://graph.facebook.com/v21.0/${page.id}/feed?fields=id,permalink_url,comments{id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=10&access_token=${page.accessToken}`,
-          `https://graph.facebook.com/v21.0/${page.id}/videos?fields=id,permalink_url,comments{id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=10&access_token=${page.accessToken}`,
-          `https://graph.facebook.com/v21.0/${page.id}/promotable_posts?fields=id,permalink_url,comments{id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=10&access_token=${page.accessToken}`,
+          `https://graph.facebook.com/v21.0/${page.id}/feed?fields=id,permalink_url,comments.order(reverse_chronological).limit(30){id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=30&access_token=${page.accessToken}`,
+          `https://graph.facebook.com/v21.0/${page.id}/videos?fields=id,permalink_url,comments.order(reverse_chronological).limit(30){id,message,from,created_time,comments{id,message,from,message_tags,created_time}}&limit=30&access_token=${page.accessToken}`,
         ];
 
         const endpointResults = await Promise.allSettled(
@@ -198,8 +197,7 @@ export async function GET(req: NextRequest) {
               const pageReplyObj = c.comments?.data?.find(
                 (subC: { from?: { id?: string } }) => subC.from?.id === page.id
               );
-              const hasAnyReply = Boolean(c.comments?.data && c.comments.data.length > 0);
-              const hasPageReply = Boolean(pageReplyObj) || hasAnyReply || repliedCommentIds.has(commentId);
+              const hasPageReply = Boolean(pageReplyObj) || repliedCommentIds.has(commentId);
 
               // Try to extract real customer name & ID from message_tags or reply if FB hid c.from
               let senderId = c.from?.id || pageReplyObj?.message_tags?.[0]?.id;
